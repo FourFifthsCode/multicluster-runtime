@@ -31,6 +31,7 @@ import (
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -81,6 +82,8 @@ type Options struct {
 	KubeconfigSecretKey string
 	// LocalKubeconfigPath is the path to kubeconfig file for test secrets.
 	LocalKubeconfigPath string
+	// IncludeLocalCluster is whether to include the local cluster in the list of clusters.
+	IncludeLocalCluster bool
 }
 
 type index struct {
@@ -124,6 +127,12 @@ func (p *Provider) Run(ctx context.Context, mgr mcmanager.Manager) error {
 		p.client = mgr.GetLocalManager().GetClient()
 		if p.client == nil {
 			return fmt.Errorf("failed to get client from manager")
+		}
+	}
+
+	if p.opts.IncludeLocalCluster {
+		if err := p.AddLocalCluster(ctx, mgr); err != nil {
+			return fmt.Errorf("failed to add local cluster: %w", err)
 		}
 	}
 
@@ -355,4 +364,43 @@ func (p *Provider) ListClusters() map[string]cluster.Cluster {
 		result[k] = v
 	}
 	return result
+}
+
+// AddLocalCluster adds the local cluster to the list of clusters.
+func (p *Provider) AddLocalCluster(ctx context.Context, mgr mcmanager.Manager) error {
+	restConfig, err := ctrl.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get local config: %w", err)
+	}
+
+	cl, err := cluster.New(restConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create local cluster: %w", err)
+	}
+
+	clCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		if err := cl.Start(clCtx); err != nil {
+			p.log.Error(err, "Failed to start local cluster")
+		}
+	}()
+
+	if !cl.GetCache().WaitForCacheSync(clCtx) {
+		cancel()
+		return fmt.Errorf("failed to sync cache")
+	}
+
+	if err := mgr.Engage(clCtx, "local", cl); err != nil {
+		cancel()
+		return fmt.Errorf("failed to engage local cluster: %w", err)
+	}
+
+	p.lock.Lock()
+	p.clusters["local"] = cl
+	p.cancelFns["local"] = cancel
+	p.lock.Unlock()
+
+	p.log.Info("Successfully added local cluster")
+
+	return nil
 }

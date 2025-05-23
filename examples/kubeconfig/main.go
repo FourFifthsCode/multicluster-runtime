@@ -63,6 +63,7 @@ func main() {
 		Namespace:             namespace,
 		KubeconfigSecretLabel: kubeconfigSecretLabel,
 		KubeconfigSecretKey:   kubeconfigSecretKey,
+		IncludeLocalCluster:   true,
 	}
 
 	// Create the provider first, then the manager with the provider
